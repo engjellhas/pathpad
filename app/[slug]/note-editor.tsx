@@ -1,15 +1,33 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 type SaveState = 'idle' | 'loading' | 'saving' | 'saved' | 'error';
 
+function statusLabel(status: SaveState) {
+  switch (status) {
+    case 'loading':
+      return 'Loading…';
+    case 'saving':
+      return 'Saving…';
+    case 'saved':
+      return 'Saved';
+    case 'error':
+      return 'Could not save';
+    default:
+      return '';
+  }
+}
+
 export default function NoteEditor({ slug }: { slug: string }) {
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [unlocked, setUnlocked] = useState(false);
   const [content, setContent] = useState('');
   const [status, setStatus] = useState<SaveState>('idle');
   const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
   const loadedRef = useRef(false);
 
   const storageKey = useMemo(() => 'private-notes-password', []);
@@ -35,15 +53,14 @@ export default function NoteEditor({ slug }: { slug: string }) {
 
       if (!response.ok) {
         const data = await response.json().catch(() => null);
-        if (response.status === 401) throw new Error('Wrong password.');
-        if (response.status === 503) {
-          throw new Error(
-            typeof data?.error === 'string'
-              ? data.error
-              : 'Storage not configured. Add Upstash Redis in your Vercel project.',
-          );
+        if (response.status === 401) {
+          window.localStorage.removeItem(storageKey);
+          throw new Error('Wrong password. Try again.');
         }
-        throw new Error('Could not load note.');
+        if (response.status === 503) {
+          throw new Error('Notes storage is not set up yet. Check your server configuration.');
+        }
+        throw new Error('Could not open this note. Please try again.');
       }
 
       const data = await response.json();
@@ -78,22 +95,47 @@ export default function NoteEditor({ slug }: { slug: string }) {
 
         if (!response.ok) throw new Error('Could not save note.');
         setStatus('saved');
+        setError('');
       } catch {
         setStatus('error');
-        setError('Could not save. Check password/storage env vars.');
+        setError('Could not save your changes. Check your connection and try typing again.');
       }
     }, 450);
 
     return () => window.clearTimeout(timeout);
   }, [content, password, slug, unlocked]);
 
+  function lockNote() {
+    window.localStorage.removeItem(storageKey);
+    setUnlocked(false);
+    setContent('');
+    setPassword('');
+    setError('');
+    setStatus('idle');
+    loadedRef.current = false;
+  }
+
+  async function copyLink() {
+    const url = `${window.location.origin}/${slug}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError('Could not copy link.');
+    }
+  }
+
   if (!unlocked) {
     return (
       <main className="wrap">
         <section className="card login">
+          <Link className="back-link" href="/">
+            ← Home
+          </Link>
           <p className="eyebrow">/{slug}</p>
-          <h1>Enter password</h1>
-          <p className="muted">One password protects all note paths.</p>
+          <h1>Unlock this note</h1>
+          <p className="muted">One password opens every path. Your browser remembers it on this device.</p>
 
           <form
             onSubmit={(event) => {
@@ -101,14 +143,27 @@ export default function NoteEditor({ slug }: { slug: string }) {
               void loadNote();
             }}
           >
-            <input
-              autoFocus
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-            <button type="submit">Open note</button>
+            <div className="password-field">
+              <input
+                autoFocus
+                type={showPassword ? 'text' : 'password'}
+                placeholder="Password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                disabled={status === 'loading'}
+              />
+              <button
+                className="ghost"
+                type="button"
+                onClick={() => setShowPassword((value) => !value)}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? 'Hide' : 'Show'}
+              </button>
+            </div>
+            <button type="submit" disabled={!password.trim() || status === 'loading'}>
+              {status === 'loading' ? 'Opening…' : 'Open note'}
+            </button>
           </form>
 
           {error ? <p className="error">{error}</p> : null}
@@ -117,26 +172,43 @@ export default function NoteEditor({ slug }: { slug: string }) {
     );
   }
 
+  const wordCount = content.trim() ? content.trim().split(/\s+/).length : 0;
+
   return (
     <main className="editor">
-      <header>
+      <header className="editor-header">
         <div>
           <p className="eyebrow">Private note</p>
           <h1>/{slug}</h1>
         </div>
 
-        <div className={`status ${status}`}>
-          {status === 'saving' ? 'Saving…' : status === 'saved' ? 'Saved' : status === 'loading' ? 'Loading…' : status === 'error' ? 'Error' : ''}
+        <div className="toolbar">
+          <button className="ghost" type="button" onClick={() => void copyLink()}>
+            {copied ? 'Copied!' : 'Copy link'}
+          </button>
+          <button className="ghost" type="button" onClick={lockNote}>
+            Lock
+          </button>
+          <div className={`status-pill ${status}`} aria-live="polite">
+            <span className="status-dot" />
+            {statusLabel(status)}
+          </div>
         </div>
       </header>
 
       <textarea
         autoFocus
         spellCheck="false"
-        placeholder="Type anything here…"
+        placeholder="Start typing — your note saves automatically…"
         value={content}
         onChange={(event) => setContent(event.target.value)}
+        disabled={status === 'loading'}
       />
+
+      <footer className="editor-footer">
+        <span>{content.length} characters · {wordCount} words</span>
+        <span>Autosaves as you type</span>
+      </footer>
 
       {error ? <p className="error bottom">{error}</p> : null}
     </main>

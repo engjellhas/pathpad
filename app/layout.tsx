@@ -2,8 +2,8 @@ import './globals.css';
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title: 'Private Notes',
-  description: 'Tiny private path-based notepad',
+  title: 'Pathpad',
+  description: 'Private path-based notepad with autosave',
   robots: { index: false, follow: false },
 };
 
