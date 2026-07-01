@@ -1,28 +1,25 @@
 import { Redis } from '@upstash/redis';
 
-let redis: Redis | null | undefined;
+let redis: Redis | undefined;
 
-function createRedis(): Redis | null {
-  const url =
-    process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
-  const token =
-    process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
+function hasRedisEnv() {
+  const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
 
-  if (url && token && url.startsWith('https://')) {
-    return new Redis({ url, token });
-  }
-
-  try {
-    return Redis.fromEnv();
-  } catch {
-    return null;
-  }
+  return Boolean(url?.trim() && token?.trim());
 }
 
 export function getRedis(): Redis | null {
-  if (redis !== undefined) return redis;
+  if (!hasRedisEnv()) return null;
 
-  redis = createRedis();
+  if (!redis) {
+    try {
+      redis = Redis.fromEnv();
+    } catch {
+      return null;
+    }
+  }
+
   return redis;
 }
 
@@ -30,7 +27,7 @@ export function storageNotConfiguredResponse() {
   return Response.json(
     {
       error:
-        'Storage not configured. In Vercel, open your project → Storage → Upstash Redis → Create.',
+        'Storage not configured. Add KV_REST_API_URL and KV_REST_API_TOKEN to your local .env.local (pull from Vercel or copy from dashboard).',
     },
     { status: 503 }
   );
