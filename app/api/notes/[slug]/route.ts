@@ -1,7 +1,5 @@
-import { Redis } from '@upstash/redis';
+import { getRedis, storageNotConfiguredResponse } from '@/lib/redis';
 import { NextRequest, NextResponse } from 'next/server';
-
-const redis = Redis.fromEnv();
 
 function isAuthorized(request: NextRequest) {
   const expected = process.env.NOTE_PASSWORD;
@@ -27,6 +25,9 @@ export async function GET(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  const redis = getRedis();
+  if (!redis) return storageNotConfiguredResponse();
+
   const { slug } = await params;
   const key = `note:${safeSlug(slug)}`;
   const content = (await redis.get<string>(key)) ?? '';
@@ -41,6 +42,9 @@ export async function PUT(
   if (!isAuthorized(request)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+
+  const redis = getRedis();
+  if (!redis) return storageNotConfiguredResponse();
 
   const body = await request.json().catch(() => null);
 

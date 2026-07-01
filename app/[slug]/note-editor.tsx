@@ -33,7 +33,18 @@ export default function NoteEditor({ slug }: { slug: string }) {
         cache: 'no-store',
       });
 
-      if (!response.ok) throw new Error(response.status === 401 ? 'Wrong password.' : 'Could not load note.');
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        if (response.status === 401) throw new Error('Wrong password.');
+        if (response.status === 503) {
+          throw new Error(
+            typeof data?.error === 'string'
+              ? data.error
+              : 'Storage not configured. Add Upstash Redis in your Vercel project.',
+          );
+        }
+        throw new Error('Could not load note.');
+      }
 
       const data = await response.json();
       setContent(data.content ?? '');
