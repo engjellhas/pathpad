@@ -2,27 +2,27 @@ import { Redis } from '@upstash/redis';
 
 let redis: Redis | null | undefined;
 
-function redisEnv() {
-  const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
+function createRedis(): Redis | null {
+  const url =
+    process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
+  const token =
+    process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
 
-  if (!url || !token || !url.startsWith('https://')) {
-    return null;
+  if (url && token && url.startsWith('https://')) {
+    return new Redis({ url, token });
   }
 
-  return { url, token };
+  try {
+    return Redis.fromEnv();
+  } catch {
+    return null;
+  }
 }
 
 export function getRedis(): Redis | null {
   if (redis !== undefined) return redis;
 
-  const env = redisEnv();
-  if (!env) {
-    redis = null;
-    return redis;
-  }
-
-  redis = new Redis(env);
+  redis = createRedis();
   return redis;
 }
 
