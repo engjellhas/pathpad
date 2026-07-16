@@ -2,7 +2,6 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import ThemeToggle from '@/app/components/theme-toggle';
 import UnlockForm from '@/app/components/unlock-form';
 import {
   decryptText,
@@ -24,7 +23,6 @@ import {
 import { useVault } from '@/lib/vault';
 
 type SaveState = 'idle' | 'loading' | 'saving' | 'saved' | 'unsaved' | 'error';
-type AccessMode = 'master' | 'share';
 
 function statusLabel(status: SaveState) {
   switch (status) {
@@ -37,50 +35,41 @@ function statusLabel(status: SaveState) {
     case 'unsaved':
       return 'Unsaved';
     case 'error':
-      return 'Could not save';
+      return 'Error';
     default:
       return '';
   }
 }
 
 export default function NoteEditor({ slug }: { slug: string }) {
-  const { ready, authed, hasKey, masterKey, logout } = useVault();
-
-  const [access, setAccess] = useState<AccessMode>('master');
-  const [sharePassword, setSharePassword] = useState('');
-  const [shareKey, setShareKey] = useState<CryptoKey | null>(null);
-  const [showShareUnlock, setShowShareUnlock] = useState(false);
-  const [shareInput, setShareInput] = useState('');
-  const [shareBusy, setShareBusy] = useState(false);
+  const { ready, unlocked, masterKey, lock } = useVault();
 
   const [content, setContent] = useState('');
   const [status, setStatus] = useState<SaveState>('idle');
   const [error, setError] = useState('');
-  const [copied, setCopied] = useState<'link' | 'text' | null>(null);
+  const [copied, setCopied] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [menuOpen, setMenuOpen] = useState(false);
   const [preview, setPreview] = useState(false);
-  const [hasSharePassword, setHasSharePassword] = useState(false);
-  const [sharePanel, setSharePanel] = useState(false);
-  const [newSharePassword, setNewSharePassword] = useState('');
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [shareMode, setShareMode] = useState(false);
+  const [shareInput, setShareInput] = useState('');
+  const [shareBusy, setShareBusy] = useState(false);
+  const [readOnlyShare, setReadOnlyShare] = useState(false);
 
   const loadedRef = useRef(false);
   const lastSavedRef = useRef('');
   const saveSeqRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const activeSharePasswordRef = useRef('');
+  const menuRef = useRef<HTMLDivElement>(null);
 
-  const canEdit = access === 'master' && hasKey;
+  const canEdit = unlocked && !readOnlyShare;
 
-  // Load when vault unlocks.
   useEffect(() => {
-    if (!ready) return;
-    if (authed && hasKey && masterKey) {
-      void loadAsMaster();
-    }
+    if (!ready || !unlocked || !masterKey || readOnlyShare) return;
+    void loadNote();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, authed, hasKey, masterKey, slug]);
+  }, [ready, unlocked, masterKey, slug]);
 
   useEffect(() => {
     if (!canEdit || savedAt == null) return;
@@ -100,9 +89,20 @@ export default function NoteEditor({ slug }: { slug: string }) {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [content, canEdit]);
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onPointer(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    window.addEventListener('mousedown', onPointer);
+    return () => window.removeEventListener('mousedown', onPointer);
+  }, [menuOpen]);
+
   const saveNote = useCallback(
     async (nextContent: string) => {
-      if (!masterKey || access !== 'master') return false;
+      if (!masterKey || !canEdit) return false;
       if (isOversize(nextContent)) {
         setStatus('error');
         setError(`Note is too large (max ~${Math.floor(MAX_NOTE_BYTES / 1000)} KB).`);
@@ -114,60 +114,44 @@ export default function NoteEditor({ slug }: { slug: string }) {
 
       try {
         const encrypted = await encryptText(nextContent, masterKey);
-        const body: Record<string, unknown> = { content: encrypted };
-
-        // Keep share ciphertext in sync when a share password is active.
-        const sharePw = activeSharePasswordRef.current || sharePassword;
-        if (hasSharePassword && sharePw) {
-          const sKey = await deriveShareKey(sharePw, slug);
-          body.shareContent = await encryptText(nextContent, sKey);
-        }
-
         const response = await fetch(`/api/notes/${encodeURIComponent(slug)}`, {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
+          body: JSON.stringify({ content: encrypted }),
         });
 
         if (seq !== saveSeqRef.current) return false;
 
         if (!response.ok) {
-          if (response.status === 401) throw new Error('Session expired. Lock and unlock again.');
+          if (response.status === 401) throw new Error('Session expired — lock and unlock again.');
           if (response.status === 413) {
             throw new Error(`Note is too large (max ~${Math.floor(MAX_NOTE_BYTES / 1000)} KB).`);
           }
-          throw new Error('Could not save note.');
+          throw new Error('Could not save.');
         }
 
-        const data = (await response.json().catch(() => null)) as {
-          updatedAt?: number;
-          hasSharePassword?: boolean;
-        } | null;
-
+        const data = (await response.json().catch(() => null)) as { updatedAt?: number } | null;
         lastSavedRef.current = nextContent;
         clearDraft(slug);
         setSavedAt(data?.updatedAt ?? Date.now());
-        if (typeof data?.hasSharePassword === 'boolean') {
-          setHasSharePassword(data.hasSharePassword);
-        }
         setStatus('saved');
         setError('');
         return true;
       } catch (err) {
         if (seq !== saveSeqRef.current) return false;
         setStatus('error');
-        setError(err instanceof Error ? err.message : 'Could not save your changes.');
+        setError(err instanceof Error ? err.message : 'Could not save.');
         return false;
       }
     },
-    [masterKey, access, slug, hasSharePassword, sharePassword]
+    [masterKey, canEdit, slug]
   );
 
-  async function loadAsMaster() {
+  async function loadNote() {
     if (!masterKey) return;
     setStatus('loading');
     setError('');
-    setAccess('master');
+    setReadOnlyShare(false);
 
     try {
       const response = await fetch(`/api/notes/${encodeURIComponent(slug)}`, {
@@ -175,9 +159,9 @@ export default function NoteEditor({ slug }: { slug: string }) {
       });
 
       if (!response.ok) {
-        if (response.status === 401) throw new Error('Session expired. Unlock again.');
+        if (response.status === 401) throw new Error('Session expired — enter password again.');
         if (response.status === 503) {
-          throw new Error('Notes storage is not set up yet. Check your server configuration.');
+          throw new Error('Storage is not configured on the server.');
         }
         throw new Error('Could not open this note.');
       }
@@ -188,9 +172,7 @@ export default function NoteEditor({ slug }: { slug: string }) {
       try {
         serverContent = await decryptText(payload, masterKey);
       } catch {
-        throw new Error(
-          'Could not decrypt this note. Use the same master password that encrypted it.'
-        );
+        throw new Error('Could not decrypt. Use the same password as on your other device.');
       }
 
       const draft = readDraft(slug);
@@ -199,19 +181,19 @@ export default function NoteEditor({ slug }: { slug: string }) {
 
       setContent(initial);
       lastSavedRef.current = serverContent;
-      setHasSharePassword(Boolean(data.hasSharePassword));
       pushLocalRecent(slug);
       loadedRef.current = true;
       setSavedAt(typeof data.updatedAt === 'number' ? data.updatedAt : Date.now());
 
       if (useDraft) {
         setStatus('unsaved');
-        setError('Restored a local draft that had not finished saving.');
         void saveNote(initial);
       } else {
         setStatus('saved');
         clearDraft(slug);
       }
+
+      requestAnimationFrame(() => textareaRef.current?.focus());
     } catch (err) {
       loadedRef.current = false;
       setStatus('error');
@@ -219,20 +201,15 @@ export default function NoteEditor({ slug }: { slug: string }) {
     }
   }
 
-  async function loadAsShare(password: string) {
+  async function openWithSharePassword(password: string) {
     setShareBusy(true);
     setError('');
-    setStatus('loading');
-
     try {
       const response = await fetch(`/api/notes/${encodeURIComponent(slug)}`, {
         headers: { 'x-share-password': password },
         cache: 'no-store',
       });
-
-      if (!response.ok) {
-        throw new Error('Wrong share password or note is not shared.');
-      }
+      if (!response.ok) throw new Error('Wrong share password.');
 
       const data = await response.json();
       const payload = typeof data.content === 'string' ? data.content : '';
@@ -241,31 +218,24 @@ export default function NoteEditor({ slug }: { slug: string }) {
       try {
         plain = await decryptText(payload, key);
       } catch {
-        // Allow legacy plaintext share payloads.
         if (!isEncryptedPayload(payload)) plain = payload;
         else throw new Error('Could not decrypt shared note.');
       }
 
-      setShareKey(key);
-      setSharePassword(password);
-      activeSharePasswordRef.current = password;
-      setAccess('share');
       setContent(plain);
       lastSavedRef.current = plain;
       loadedRef.current = true;
-      setHasSharePassword(true);
-      setShowShareUnlock(false);
+      setReadOnlyShare(true);
+      setShareMode(false);
       setSavedAt(typeof data.updatedAt === 'number' ? data.updatedAt : Date.now());
       setStatus('saved');
     } catch (err) {
-      setStatus('error');
-      setError(err instanceof Error ? err.message : 'Could not open shared note.');
+      setError(err instanceof Error ? err.message : 'Could not open.');
     } finally {
       setShareBusy(false);
     }
   }
 
-  // Autosave (master only).
   useEffect(() => {
     if (!canEdit || !loadedRef.current) return;
 
@@ -282,7 +252,6 @@ export default function NoteEditor({ slug }: { slug: string }) {
     return () => window.clearTimeout(timeout);
   }, [content, slug, canEdit, saveNote]);
 
-  // Keyboard shortcuts.
   useEffect(() => {
     if (!canEdit) return;
 
@@ -291,12 +260,10 @@ export default function NoteEditor({ slug }: { slug: string }) {
       if (meta && event.key.toLowerCase() === 's') {
         event.preventDefault();
         void saveNote(content);
-        return;
       }
       if (meta && event.key.toLowerCase() === 'e') {
         event.preventDefault();
         setPreview((v) => !v);
-        return;
       }
       if (event.key === 'Tab' && document.activeElement === textareaRef.current && !preview) {
         event.preventDefault();
@@ -316,104 +283,13 @@ export default function NoteEditor({ slug }: { slug: string }) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [canEdit, content, saveNote, preview]);
 
-  async function enableSharePassword() {
-    if (!masterKey || !newSharePassword.trim()) return;
-    setStatus('saving');
-    try {
-      const encrypted = await encryptText(content, masterKey);
-      const sKey = await deriveShareKey(newSharePassword, slug);
-      const shareContent = await encryptText(content, sKey);
-
-      const response = await fetch(`/api/notes/${encodeURIComponent(slug)}`, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          content: encrypted,
-          shareContent,
-          sharePassword: newSharePassword,
-        }),
-      });
-      if (!response.ok) throw new Error('Could not set share password.');
-
-      activeSharePasswordRef.current = newSharePassword;
-      setSharePassword(newSharePassword);
-      setHasSharePassword(true);
-      setNewSharePassword('');
-      setSharePanel(false);
-      setStatus('saved');
-      setError('');
-    } catch (err) {
-      setStatus('error');
-      setError(err instanceof Error ? err.message : 'Could not set share password.');
-    }
-  }
-
-  async function clearSharePassword() {
-    if (!masterKey) return;
-    setStatus('saving');
-    try {
-      const encrypted = await encryptText(content, masterKey);
-      const response = await fetch(`/api/notes/${encodeURIComponent(slug)}`, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          content: encrypted,
-          clearSharePassword: true,
-        }),
-      });
-      if (!response.ok) throw new Error('Could not remove share password.');
-      activeSharePasswordRef.current = '';
-      setSharePassword('');
-      setHasSharePassword(false);
-      setSharePanel(false);
-      setStatus('saved');
-    } catch (err) {
-      setStatus('error');
-      setError(err instanceof Error ? err.message : 'Could not remove share password.');
-    }
-  }
-
-  async function moveToTrash() {
-    const response = await fetch(`/api/notes/${encodeURIComponent(slug)}`, {
-      method: 'DELETE',
-    });
-    if (!response.ok) {
-      setError('Could not move note to trash.');
-      return;
-    }
-    window.location.href = '/?trash=1';
-  }
-
-  async function lockNote() {
-    await logout();
-    setContent('');
-    setAccess('master');
-    setShareKey(null);
-    setSharePassword('');
-    activeSharePasswordRef.current = '';
-    loadedRef.current = false;
-    lastSavedRef.current = '';
-    setStatus('idle');
-    setSavedAt(null);
-  }
-
   async function copyLink() {
     try {
       await navigator.clipboard.writeText(`${window.location.origin}/${slug}`);
-      setCopied('link');
-      window.setTimeout(() => setCopied(null), 2000);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
     } catch {
       setError('Could not copy link.');
-    }
-  }
-
-  async function copyText() {
-    try {
-      await navigator.clipboard.writeText(content);
-      setCopied('text');
-      window.setTimeout(() => setCopied(null), 2000);
-    } catch {
-      setError('Could not copy note.');
     }
   }
 
@@ -425,9 +301,27 @@ export default function NoteEditor({ slug }: { slug: string }) {
     a.download = `${slug || 'note'}.txt`;
     a.click();
     URL.revokeObjectURL(url);
+    setMenuOpen(false);
+  }
+
+  async function trashNote() {
+    if (!window.confirm(`Move /${slug} to trash?`)) return;
+    const response = await fetch(`/api/notes/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+    if (!response.ok) {
+      setError('Could not trash note.');
+      return;
+    }
+    window.location.href = '/';
   }
 
   const previewHtml = useMemo(() => renderMarkdown(content), [content]);
+  const wordCount = content.trim() ? content.trim().split(/\s+/).length : 0;
+  void now;
+
+  const statusText =
+    savedAt != null && status === 'saved'
+      ? `Saved ${formatRelativeTime(savedAt)}`
+      : statusLabel(status);
 
   if (!ready) {
     return (
@@ -439,80 +333,7 @@ export default function NoteEditor({ slug }: { slug: string }) {
     );
   }
 
-  // Not unlocked: master login or share password.
-  if (!(authed && hasKey) && access !== 'share') {
-    return (
-      <main className="wrap">
-        <section className="card login">
-          <div className="card-top-actions">
-            <Link className="back-link" href="/">
-              ← Home
-            </Link>
-            <ThemeToggle />
-          </div>
-
-          {!showShareUnlock ? (
-            <>
-              <UnlockForm
-                title={`Unlock /${slug}`}
-                subtitle="Enter your master password. Prefer a shared link? Open with a note share password instead."
-              />
-              <button
-                className="ghost"
-                type="button"
-                style={{ marginTop: 14, width: '100%' }}
-                onClick={() => setShowShareUnlock(true)}
-              >
-                Open with share password
-              </button>
-            </>
-          ) : (
-            <>
-              <p className="eyebrow">/{slug}</p>
-              <h1>Share access</h1>
-              <p className="muted">
-                This only unlocks this single path — not your full notepad.
-              </p>
-              <form
-                className="login"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void loadAsShare(shareInput);
-                }}
-              >
-                <div className="password-field">
-                  <input
-                    autoFocus
-                    type="password"
-                    placeholder="Share password"
-                    value={shareInput}
-                    onChange={(e) => setShareInput(e.target.value)}
-                    disabled={shareBusy}
-                  />
-                </div>
-                <button type="submit" disabled={!shareInput.trim() || shareBusy}>
-                  {shareBusy ? 'Opening…' : 'Open shared note'}
-                </button>
-              </form>
-              <button
-                className="ghost"
-                type="button"
-                style={{ marginTop: 14, width: '100%' }}
-                onClick={() => setShowShareUnlock(false)}
-              >
-                Back to master unlock
-              </button>
-            </>
-          )}
-
-          {error ? <p className="error">{error}</p> : null}
-        </section>
-      </main>
-    );
-  }
-
-  // Session yes, vault key no.
-  if (authed && !hasKey && access !== 'share') {
+  if (!unlocked && !readOnlyShare) {
     return (
       <main className="wrap">
         <section className="card login">
@@ -520,137 +341,128 @@ export default function NoteEditor({ slug }: { slug: string }) {
             ← Home
           </Link>
           <UnlockForm
-            mode="vault"
-            title="Unlock encryption vault"
-            subtitle="You are signed in, but this browser tab still needs the master password to decrypt notes."
+            title={`Open /${slug}`}
+            subtitle="Enter once on this device. Then paste text and open the same link on your phone."
           />
+          <button
+            className="text-btn share-alt"
+            type="button"
+            onClick={() => setShareMode((v) => !v)}
+          >
+            {shareMode ? 'Hide share password' : 'Have a share password?'}
+          </button>
+          {shareMode ? (
+            <form
+              className="login compact"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void openWithSharePassword(shareInput);
+              }}
+            >
+              <div className="password-field">
+                <input
+                  type="password"
+                  placeholder="Share password"
+                  value={shareInput}
+                  onChange={(e) => setShareInput(e.target.value)}
+                  disabled={shareBusy}
+                />
+              </div>
+              <button type="submit" disabled={!shareInput.trim() || shareBusy}>
+                {shareBusy ? 'Opening…' : 'Open shared note'}
+              </button>
+            </form>
+          ) : null}
           {error ? <p className="error">{error}</p> : null}
         </section>
       </main>
     );
   }
 
-  const wordCount = content.trim() ? content.trim().split(/\s+/).length : 0;
-  const lineCount = content ? content.split('\n').length : 0;
-  const sizeLabel =
-    savedAt != null && status === 'saved'
-      ? `Saved ${formatRelativeTime(savedAt)}`
-      : statusLabel(status);
-  void now;
-
   return (
     <main className="editor">
-      <header className="editor-header">
-        <div>
-          <p className="eyebrow">
-            {access === 'share' ? 'Shared note (read-only)' : 'Private note · encrypted'}
-          </p>
+      <header className="editor-header simple">
+        <div className="editor-title">
+          <Link className="back-mini" href="/">
+            Pathpad
+          </Link>
           <h1>/{slug}</h1>
         </div>
 
-        <div className="toolbar">
-          <ThemeToggle />
-          <button className="ghost" type="button" onClick={() => setPreview((v) => !v)}>
-            {preview ? 'Edit' : 'Preview'}
-          </button>
-          <button className="ghost" type="button" onClick={() => void copyLink()}>
-            {copied === 'link' ? 'Copied!' : 'Copy link'}
-          </button>
-          <button className="ghost" type="button" onClick={() => void copyText()}>
-            {copied === 'text' ? 'Copied!' : 'Copy text'}
-          </button>
-          <button className="ghost" type="button" onClick={downloadNote}>
-            Download
-          </button>
-          {canEdit ? (
-            <button className="ghost" type="button" onClick={() => setSharePanel((v) => !v)}>
-              {hasSharePassword ? 'Share · on' : 'Share'}
-            </button>
-          ) : null}
-          {canEdit ? (
-            <button
-              className="ghost danger"
-              type="button"
-              onClick={() => setConfirmDelete(true)}
-            >
-              Trash
-            </button>
-          ) : null}
-          {access === 'master' ? (
-            <button className="ghost" type="button" onClick={() => void lockNote()}>
-              Lock
-            </button>
-          ) : (
-            <Link className="ghost button-link" href="/">
-              Home
-            </Link>
-          )}
+        <div className="toolbar simple-toolbar">
           <div className={`status-pill ${status}`} aria-live="polite">
             <span className="status-dot" />
-            {sizeLabel}
+            {statusText}
+          </div>
+
+          <button className="button copy-primary" type="button" onClick={() => void copyLink()}>
+            {copied ? 'Link copied' : 'Copy link'}
+          </button>
+
+          <div className="menu-wrap" ref={menuRef}>
+            <button
+              className="ghost"
+              type="button"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen((v) => !v)}
+            >
+              More
+            </button>
+            {menuOpen ? (
+              <div className="menu-pop">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPreview((v) => !v);
+                    setMenuOpen(false);
+                  }}
+                >
+                  {preview ? 'Edit text' : 'Preview Markdown'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(content);
+                    setMenuOpen(false);
+                  }}
+                >
+                  Copy text
+                </button>
+                <button type="button" onClick={downloadNote}>
+                  Download .txt
+                </button>
+                {canEdit ? (
+                  <button type="button" className="danger-item" onClick={() => void trashNote()}>
+                    Move to trash
+                  </button>
+                ) : null}
+                {!readOnlyShare ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      void lock();
+                    }}
+                  >
+                    Lock device
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
       </header>
 
-      {sharePanel && canEdit ? (
-        <section className="panel">
-          <div>
-            <strong>Per-note share password</strong>
-            <p className="muted small">
-              Anyone with this password can open <code>/{slug}</code> only — not your other notes.
-              Content is encrypted with the share password.
-            </p>
-          </div>
-          {hasSharePassword ? (
-            <div className="panel-actions">
-              <span className="status-pill saved">
-                <span className="status-dot" /> Share password enabled
-              </span>
-              <button className="ghost danger" type="button" onClick={() => void clearSharePassword()}>
-                Remove share password
-              </button>
-            </div>
-          ) : (
-            <div className="panel-actions">
-              <input
-                type="password"
-                placeholder="New share password"
-                value={newSharePassword}
-                onChange={(e) => setNewSharePassword(e.target.value)}
-              />
-              <button
-                type="button"
-                disabled={!newSharePassword.trim()}
-                onClick={() => void enableSharePassword()}
-              >
-                Enable sharing
-              </button>
-            </div>
-          )}
-        </section>
-      ) : null}
-
-      {confirmDelete && canEdit ? (
-        <section className="panel danger-panel">
-          <div>
-            <strong>Move /{slug} to trash?</strong>
-            <p className="muted small">Soft-deleted for 30 days. Restore from Trash on the home page.</p>
-          </div>
-          <div className="panel-actions">
-            <button className="ghost" type="button" onClick={() => setConfirmDelete(false)}>
-              Cancel
-            </button>
-            <button className="danger-solid" type="button" onClick={() => void moveToTrash()}>
-              Move to trash
-            </button>
-          </div>
-        </section>
+      {readOnlyShare ? (
+        <p className="banner">Shared note · read-only</p>
       ) : null}
 
       {preview ? (
         <div
           className="markdown-preview"
-          dangerouslySetInnerHTML={{ __html: previewHtml || '<p class="muted">Nothing to preview.</p>' }}
+          dangerouslySetInnerHTML={{
+            __html: previewHtml || '<p class="muted">Nothing to preview.</p>',
+          }}
         />
       ) : (
         <textarea
@@ -658,11 +470,7 @@ export default function NoteEditor({ slug }: { slug: string }) {
           autoFocus
           spellCheck="false"
           readOnly={!canEdit}
-          placeholder={
-            canEdit
-              ? 'Start typing — encrypted autosave… (⌘/Ctrl+S save · ⌘/Ctrl+E preview · Tab indent)'
-              : 'Shared note is read-only'
-          }
+          placeholder="Type or paste anything… it saves automatically. Copy the link to open on another device."
           value={content}
           onChange={(event) => setContent(event.target.value)}
           disabled={status === 'loading'}
@@ -671,14 +479,9 @@ export default function NoteEditor({ slug }: { slug: string }) {
 
       <footer className="editor-footer">
         <span>
-          {content.length.toLocaleString()} characters · {wordCount.toLocaleString()} words ·{' '}
-          {lineCount.toLocaleString()} lines
+          {content.length.toLocaleString()} chars · {wordCount.toLocaleString()} words
         </span>
-        <span className="footer-hint">
-          {access === 'share'
-            ? 'Share access · read-only'
-            : 'Encrypted at rest · local draft · ⌘/Ctrl+S · ⌘/Ctrl+E'}
-        </span>
+        <span className="footer-hint">Autosaves · open the same link on phone</span>
       </footer>
 
       {error ? <p className="error bottom">{error}</p> : null}

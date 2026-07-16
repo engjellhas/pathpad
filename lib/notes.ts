@@ -16,6 +16,18 @@ export function safeSlug(slug: string) {
     .slice(0, 80);
 }
 
+/** Short path for quick PC ↔ phone sharing. */
+export function randomSlug(length = 6) {
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  let out = '';
+  for (let i = 0; i < length; i++) {
+    out += alphabet[bytes[i]! % alphabet.length];
+  }
+  return out;
+}
+
 export function draftKey(slug: string) {
   return `${DRAFT_PREFIX}${safeSlug(slug)}`;
 }
@@ -82,7 +94,7 @@ export function writeDraft(slug: string, content: string) {
   try {
     window.localStorage.setItem(draftKey(slug), content);
   } catch {
-    // Quota exceeded — ignore; Redis is source of truth.
+    // ignore
   }
 }
 

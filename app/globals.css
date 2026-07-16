@@ -152,6 +152,128 @@ code {
   margin-top: 28px;
 }
 
+.quick-note {
+  width: 100%;
+  height: auto;
+  min-height: 64px;
+  margin-bottom: 16px;
+  padding: 16px 20px;
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  text-align: left;
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.quick-note span {
+  font-size: 13px;
+  font-weight: 500;
+  opacity: 0.75;
+  color: inherit;
+}
+
+.home-status {
+  margin: 18px 0 0;
+  color: var(--fg-faint);
+  font-size: 13px;
+}
+
+.text-btn.inline {
+  display: inline;
+  vertical-align: baseline;
+}
+
+.share-alt {
+  display: block;
+  margin: 16px auto 0;
+  text-align: center;
+  width: 100%;
+}
+
+.editor-header.simple {
+  align-items: center;
+}
+
+.editor-title h1 {
+  font-size: clamp(26px, 4vw, 36px);
+}
+
+.back-mini {
+  display: inline-block;
+  margin-bottom: 6px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-decoration: none;
+}
+
+.simple-toolbar {
+  align-items: center;
+}
+
+.copy-primary {
+  height: 40px;
+  padding: 0 16px;
+  font-size: 14px;
+}
+
+.menu-wrap {
+  position: relative;
+}
+
+.menu-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  min-width: 180px;
+  padding: 6px;
+  border-radius: 16px;
+  border: 1px solid var(--card-border);
+  background: var(--bg);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.menu-pop button {
+  height: 40px;
+  justify-content: flex-start;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--fg);
+  font-weight: 600;
+  font-size: 14px;
+  padding: 0 12px;
+}
+
+.menu-pop button:hover {
+  background: var(--ghost-bg);
+}
+
+.menu-pop .danger-item {
+  color: var(--danger);
+}
+
+.banner {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .path-form {
   display: flex;
   align-items: center;

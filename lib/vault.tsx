@@ -10,22 +10,24 @@ import {
   type ReactNode,
 } from 'react';
 import {
-  clearKeyFromSession,
+  clearKeyFromDevice,
   deriveMasterKey,
   exportKey,
   importKey,
-  loadKeyFromSession,
-  saveKeyToSession,
+  loadKeyFromDevice,
+  saveKeyToDevice,
 } from '@/lib/crypto';
 
 type VaultState = {
   ready: boolean;
+  /** Fully ready to read/write notes on this device. */
+  unlocked: boolean;
   authed: boolean;
   hasKey: boolean;
   masterKey: CryptoKey | null;
-  login: (password: string) => Promise<void>;
-  unlockVault: (password: string) => Promise<void>;
-  logout: () => Promise<void>;
+  /** One-step unlock for everyday use. */
+  unlock: (password: string) => Promise<void>;
+  lock: () => Promise<void>;
   refreshAuth: () => Promise<void>;
 };
 
@@ -50,17 +52,36 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
 
     async function boot() {
-      await refreshAuth();
-      const stored = loadKeyFromSession();
+      let key: CryptoKey | null = null;
+      const stored = loadKeyFromDevice();
       if (stored) {
         try {
-          const key = await importKey(stored);
-          if (!cancelled) setMasterKey(key);
+          key = await importKey(stored);
         } catch {
-          clearKeyFromSession();
+          clearKeyFromDevice();
         }
       }
-      if (!cancelled) setReady(true);
+
+      let sessionOk = false;
+      try {
+        const res = await fetch('/api/auth/me', { cache: 'no-store' });
+        const data = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+        sessionOk = Boolean(data?.ok);
+      } catch {
+        sessionOk = false;
+      }
+
+      // Everyday use: only stay unlocked when both session cookie and device key exist.
+      if (!sessionOk || !key) {
+        if (!sessionOk) clearKeyFromDevice();
+        key = sessionOk ? key : null;
+      }
+
+      if (!cancelled) {
+        setAuthed(sessionOk);
+        setMasterKey(key);
+        setReady(true);
+      }
     }
 
     void boot();
@@ -69,77 +90,59 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     };
   }, [refreshAuth]);
 
-  const setKeyFromPassword = useCallback(async (password: string) => {
+  const unlock = useCallback(async (password: string) => {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+
+    const data = (await res.json().catch(() => null)) as {
+      error?: string;
+      retryAfter?: number;
+    } | null;
+
+    if (!res.ok) {
+      if (res.status === 429) {
+        throw new Error(
+          data?.error || `Too many attempts. Try again in ${data?.retryAfter ?? 60}s.`
+        );
+      }
+      throw new Error(data?.error || 'Wrong password.');
+    }
+
     const key = await deriveMasterKey(password);
     const exported = await exportKey(key);
-    saveKeyToSession(exported);
+    saveKeyToDevice(exported);
     setMasterKey(key);
+    setAuthed(true);
   }, []);
 
-  const login = useCallback(
-    async (password: string) => {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ password }),
-      });
-
-      const data = (await res.json().catch(() => null)) as {
-        error?: string;
-        retryAfter?: number;
-      } | null;
-
-      if (!res.ok) {
-        if (res.status === 429) {
-          throw new Error(
-            data?.error ||
-              `Too many attempts. Try again in ${data?.retryAfter ?? 60}s.`
-          );
-        }
-        throw new Error(data?.error || 'Wrong password.');
-      }
-
-      await setKeyFromPassword(password);
-      setAuthed(true);
-    },
-    [setKeyFromPassword]
-  );
-
-  const unlockVault = useCallback(
-    async (password: string) => {
-      // Session may already exist; only re-derive the encryption key.
-      if (!authed) {
-        await login(password);
-        return;
-      }
-      await setKeyFromPassword(password);
-    },
-    [authed, login, setKeyFromPassword]
-  );
-
-  const logout = useCallback(async () => {
+  const lock = useCallback(async () => {
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
     } catch {
       // ignore
     }
-    clearKeyFromSession();
+    clearKeyFromDevice();
     setMasterKey(null);
     setAuthed(false);
   }, []);
 
+  const unlocked = authed && masterKey != null;
+
   const value = useMemo<VaultState>(
     () => ({
       ready,
+      unlocked,
       authed,
       hasKey: masterKey != null,
       masterKey,
-      login,
-      unlockVault,
-      logout,
+      unlock,
+      lock,
       refreshAuth,
     }),
-    [ready, authed, masterKey, login, unlockVault, logout, refreshAuth]
+    [ready, unlocked, authed, masterKey, unlock, lock, refreshAuth]
   );
 
   return <VaultContext.Provider value={value}>{children}</VaultContext.Provider>;

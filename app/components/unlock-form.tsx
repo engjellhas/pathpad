@@ -6,17 +6,17 @@ import { useVault } from '@/lib/vault';
 type Props = {
   title?: string;
   subtitle?: string;
-  mode?: 'login' | 'vault';
   onDone?: () => void;
+  compact?: boolean;
 };
 
 export default function UnlockForm({
-  title = 'Unlock Pathpad',
-  subtitle = 'One password opens every path. A secure session cookie keeps you signed in — the password never stays in localStorage.',
-  mode = 'login',
+  title = 'Enter password',
+  subtitle = 'Same password on every device. Stay signed in until you lock.',
   onDone,
+  compact = false,
 }: Props) {
-  const { login, unlockVault } = useVault();
+  const { unlock } = useVault();
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -27,28 +27,31 @@ export default function UnlockForm({
     setLoading(true);
     setError('');
     try {
-      if (mode === 'vault') await unlockVault(password);
-      else await login(password);
+      await unlock(password);
       setPassword('');
       onDone?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not unlock.');
+      setError(err instanceof Error ? err.message : 'Wrong password.');
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <form className="login" onSubmit={submit}>
-      <p className="eyebrow">Pathpad</p>
-      <h1>{title}</h1>
-      <p className="muted">{subtitle}</p>
+    <form className={`login ${compact ? 'compact' : ''}`} onSubmit={submit}>
+      {!compact ? (
+        <>
+          <p className="eyebrow">Pathpad</p>
+          <h1>{title}</h1>
+          <p className="muted">{subtitle}</p>
+        </>
+      ) : null}
 
-      <div className="password-field" style={{ marginTop: 24 }}>
+      <div className="password-field" style={compact ? undefined : { marginTop: 24 }}>
         <input
           autoFocus
           type={showPassword ? 'text' : 'password'}
-          placeholder="Master password"
+          placeholder="Password"
           value={password}
           onChange={(event) => setPassword(event.target.value)}
           disabled={loading}
@@ -64,7 +67,7 @@ export default function UnlockForm({
         </button>
       </div>
       <button type="submit" disabled={!password.trim() || loading} style={{ marginTop: 10 }}>
-        {loading ? 'Unlocking…' : 'Unlock'}
+        {loading ? 'Opening…' : 'Continue'}
       </button>
       {error ? <p className="error">{error}</p> : null}
     </form>

@@ -68,24 +68,26 @@ export async function importKey(b64: string) {
   ]);
 }
 
-export function saveKeyToSession(b64: string) {
+/** Remember vault on this device until Lock (localStorage for everyday multi-tab / reopen). */
+export function saveKeyToDevice(b64: string) {
   try {
-    sessionStorage.setItem(KEY_STORAGE, b64);
+    localStorage.setItem(KEY_STORAGE, b64);
   } catch {
     // ignore
   }
 }
 
-export function loadKeyFromSession(): string | null {
+export function loadKeyFromDevice(): string | null {
   try {
-    return sessionStorage.getItem(KEY_STORAGE);
+    return localStorage.getItem(KEY_STORAGE);
   } catch {
     return null;
   }
 }
 
-export function clearKeyFromSession() {
+export function clearKeyFromDevice() {
   try {
+    localStorage.removeItem(KEY_STORAGE);
     sessionStorage.removeItem(KEY_STORAGE);
   } catch {
     // ignore
@@ -105,7 +107,6 @@ export async function encryptText(plain: string, key: CryptoKey) {
 export async function decryptText(payload: string, key: CryptoKey) {
   if (!payload) return '';
   if (!payload.startsWith(ENC_PREFIX)) {
-    // Legacy plaintext notes.
     return payload;
   }
 
